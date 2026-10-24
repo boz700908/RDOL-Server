@@ -14,7 +14,7 @@ import {
   publishLevel,
   deleteLevel,
   downloadLevel,
-  downloadUpstreamLevel,
+  startBrowserDownload,
   uploadChart,
 } from './api.js';
 
@@ -156,6 +156,7 @@ export function renderLevels(container) {
     upTotal: 0,
     upKeyword: '',
     upHits: [],
+    upLoaded: false,
   };
 
   const say = (el, text, isError) => {
@@ -329,6 +330,11 @@ export function renderLevels(container) {
       container.querySelectorAll('[data-panel]').forEach((el) => {
         el.hidden = el.dataset.panel !== name;
       });
+      // 不填关键词就是「上游有什么都列出来」：第一次进这页就自动拉一页
+      if (name === 'upstream' && !state.upLoaded) {
+        state.upLoaded = true;
+        searchUp();
+      }
       return;
     }
 
@@ -387,6 +393,7 @@ export function renderLevels(container) {
 
     if (action === 'up-search') {
       state.upPage = 1;
+      state.upLoaded = true;
       searchUp();
       return;
     }
@@ -406,11 +413,15 @@ export function renderLevels(container) {
     }
 
     if (action === 'up-download') {
-      try {
-        await downloadUpstreamLevel(button.dataset.upId);
-      } catch (err) {
-        say(upMessage, err.message, true);
+      // 直连上游 CDN：包不经过这台服务器，浏览器直接下到本机
+      const hit = state.upHits.find((h) => h.id === button.dataset.upId);
+      const url = hit?.rdzipUrl;
+      if (!url) {
+        say(upMessage, '这条记录没有可用的直链', true);
+        return;
       }
+      startBrowserDownload(url);
+      say(upMessage, '已开始下载，浏览器直连上游 CDN');
       return;
     }
 

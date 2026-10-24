@@ -191,8 +191,21 @@ export async function downloadLevel(id) {
   return downloadBinary(`/api/levels/${encodeURIComponent(id)}/download`, `${id}.rdzip`);
 }
 
-export async function downloadUpstreamLevel(id) {
-  return downloadBinary(`/api/levels/upstream/${encodeURIComponent(id)}/download`, `${id}.rdzip`);
+/**
+ * 让浏览器自己去下载一个直链（上游 CDN 等）。
+ *
+ * 不走 fetch + Blob：那要求服务端先把整个文件读一遍再转发，跨域时还会被
+ * CORS 拦住。直接交给浏览器导航，它按自己的规则存到本机下载目录。
+ */
+export function startBrowserDownload(url) {
+  if (!url) throw new Error('缺少下载地址');
+  const a = document.createElement('a');
+  a.href = url;
+  a.rel = 'noopener';
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // ---------------- Mod 发布 ----------------

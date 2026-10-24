@@ -1270,9 +1270,11 @@ async function handleDownloadLevel(
 }
 
 /**
- * GET /api/levels/upstream/:id/download — 直连上游下载。
+ * GET /api/levels/upstream/:id/download — 302 到上游 CDN，由浏览器直接去取。
  *
- * 上游会 302 到 CDN，Node fetch 默认跟随；边收边转，不把整包读进内存。
+ * 刻意不在这台机器上中转：2 核 1Mbps 的机器把十几兆的包自己下载一遍再吐给
+ * 浏览器，等于把上行带宽全吃光。要落到这台服务器上的是「发布到本库」
+ * （fetchUpstreamPackage），不是下载。
  */
 async function handleUpstreamDownload(
   req: http.IncomingMessage,
@@ -1285,46 +1287,8 @@ async function handleUpstreamDownload(
     return;
   }
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(url, {
-      headers: { 'User-Agent': 'RDOL-Server/2.0 (+self-hosted)', Accept: '*/*' },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(180000)
-    });
-  } catch (err) {
-    sendJson(res, 502, {
-      success: false,
-      message: `连接上游失败：${err instanceof Error ? err.message : String(err)}`
-    });
-    return;
-  }
-
-  if (!upstream.ok || !upstream.body) {
-    sendJson(res, 502, { success: false, message: `上游返回 ${upstream.status}` });
-    return;
-  }
-
-  const length = upstream.headers.get('content-length');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/zip',
-    'Content-Disposition': `attachment; filename="${id}.rdzip"`
-  };
-  if (length) headers['Content-Length'] = length;
-  res.writeHead(200, headers);
-
-  try {
-    const reader = upstream.body.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(Buffer.from(value));
-    }
-  } catch {
-    // 客户端中途断开是常态，不当作错误
-  } finally {
-    res.end();
-  }
+  res.writeHead(302, { Location: url, 'Cache-Control': 'no-store' });
+  res.end();
 }
 
 // ============================================================
