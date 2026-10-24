@@ -31,6 +31,9 @@ import crypto from 'crypto';
 import { pino } from 'pino';
 import { initSchema } from './db/schema';
 import { publishLevel, searchLevels, countLevels, upstreamDownloadUrl, UPSTREAM } from './services/level.service';
+// CHART_DIR 由 config/chart.ts 统一导出：上传落盘、下载读取、孤儿清理三处
+// 必须看同一个目录，否则清理会去别的地方找文件。
+import { CHART_DIR } from './config/chart';
 
 const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } }
@@ -38,7 +41,6 @@ const logger = pino({
 
 const API_PORT = Number(process.env.API_PORT || 3004);
 const API_VERSION = process.env.API_VERSION || '2.0.0';
-const CHART_DIR = path.resolve(process.env.CHART_DIR || './charts');
 const CHART_BASE_URL = (process.env.CHART_BASE_URL || '').replace(/\/$/, '');
 const API_TOKEN = process.env.API_TOKEN || '';
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 64) * 1024 * 1024;

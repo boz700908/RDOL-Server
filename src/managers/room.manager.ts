@@ -2,6 +2,7 @@ import { sceneManager } from './scene.manager';
 import { Room, RoomListItem } from '../types';
 import { MAX_ROOMS, MAX_PLAYERS_PER_ROOM } from '../config/constants';
 import { ERR_ROOM_LIMIT_REACHED, ERR_ROOM_NOT_FOUND, ERR_ROOM_FULL, ERR_ROOM_PASSWORD_WRONG } from '../utils/errors';
+import { cleanupChartForRoom } from '../services/chart-cleanup.service';
 
 class RoomManager {
   private rooms = new Map<string, Room>();
@@ -111,7 +112,15 @@ class RoomManager {
     }
 
     if (updates.name !== undefined) room.name = updates.name;
-    if (updates.chartUrl !== undefined) room.chartUrl = updates.chartUrl;
+    if (updates.chartUrl !== undefined) {
+      // 房主换谱面时，旧包同样失去引用。新包多半刚上传完还在用，交给周期清扫
+      // 按年龄门槛判断，这里只登记被替换掉的那一个。
+      const previousChartUrl = room.chartUrl;
+      room.chartUrl = updates.chartUrl;
+      if (previousChartUrl && previousChartUrl !== updates.chartUrl) {
+        cleanupChartForRoom(previousChartUrl);
+      }
+    }
     if (updates.chartName !== undefined) room.chartName = updates.chartName;
     if (updates.password !== undefined) room.password = updates.password || null;
 
@@ -119,12 +128,19 @@ class RoomManager {
   }
 
   destroy(roomId: string): void {
+    // 房间一销毁，它上传的谱面就没人引用了。必须在这里记下 chartUrl 再删房间
+    // 记录，否则之后再也查不到这个房间用过哪个文件。
+    const chartUrl = this.rooms.get(roomId)?.chartUrl ?? null;
+
     this.cancelCountdown(roomId);
     this.readyPlayers.delete(roomId);
     this.finishedPlayers.delete(roomId);
     this.playerScores.delete(roomId);
     this.rooms.delete(roomId);
     sceneManager.destroyScene(roomId);
+
+    // 延迟清理，给最后一位退房的玩家留下载收尾的窗口
+    cleanupChartForRoom(chartUrl);
   }
 
   getRoomCount(): number {

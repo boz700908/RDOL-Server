@@ -9,6 +9,7 @@ import { broadcastService } from './services/broadcast.service';
 import { createAdminHttpServer } from './admin-server';
 import * as adminWsManager from './admin-ws.manager';
 import { initSchema } from './db/schema';
+import { startChartCleanup } from './services/chart-cleanup.service';
 
 // 建表（幂等），必须在任何数据库访问之前完成
 initSchema();
@@ -23,6 +24,8 @@ const ADMIN_OVERVIEW_INTERVAL_MS = 3000;
 httpServer.listen(config.server.port, () => {
   logSystem(`服务器启动，端口: ${config.server.port}（WebSocket + 管理页 http://localhost:${config.server.port}/ ）`);
   broadcastService.start();
+  // 兜住没人认领的谱面：房间销毁时的清理是主路径，这里扫漏网的
+  startChartCleanup();
   setInterval(() => {
     const lobby = sceneManager.getScene('lobby');
     adminWsManager.broadcastToAllAdmins({
