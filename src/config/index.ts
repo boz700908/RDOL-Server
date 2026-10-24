@@ -44,28 +44,10 @@ export const config = {
     // SQLite 单文件数据库，无需账号密码
     file: env('DB_FILE', './data/rdonline.db')
   },
-  dev: {
-    // 开发模式：验证码固定、不真正发信、日志打印验证码
-    mode: envBoolean('DEV_MODE', true),
-    fixedCode: env('DEV_FIXED_CODE', '123456'),
-    // 为 false 时注册不校验邮箱验证码（不做邮件服务的部署用）
-    requireEmailCode: envBoolean('REQUIRE_EMAIL_CODE', false),
+  auth: {
     // 登录是否强制已绑定 QQ（原版依赖 QQ 机器人，自建部署默认关闭）
     requireQqBind: envBoolean('REQUIRE_QQ_BIND', false)
-  },
-  smtp: {
-    // 全部可选：未配置时不创建 transporter，验证码只进日志
-    host: env('SMTP_HOST', ''),
-    port: envPort('SMTP_PORT', 465),
-    secure: envBoolean('SMTP_SECURE', true),
-    user: env('SMTP_USER', ''),
-    pass: env('SMTP_PASS', ''),
-    fromName: env('SMTP_FROM_NAME', 'RhythmDoctorOnline')
   }
 };
-
-export function smtpConfigured(): boolean {
-  return Boolean(config.smtp.host && config.smtp.user);
-}
 
 export { requiredEnv };

@@ -45,17 +45,7 @@ BEGIN
   UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
 END;
 
-CREATE TABLE IF NOT EXISTS email_codes (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  email      TEXT    NOT NULL,
-  code       TEXT    NOT NULL,
-  type       INTEGER NOT NULL DEFAULT 1,
-  expires_at TEXT    NOT NULL,
-  used       INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_email_codes_email_type ON email_codes (email, type);
+-- 邮箱验证已移除，不再建 email_codes 表（保留客户端 sendCode 动作名即可）
 
 -- 社区谱面库（替代已失效的 cafe.rhythmdoctor.top / orchardb.fly.dev）
 -- 字段与原 RhythmCafe LevelDocument 一一对应，客户端无需改动解析逻辑

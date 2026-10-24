@@ -1,35 +1,27 @@
-# Dependencies
+# 依赖
 node_modules/
 
-# Build output
+# 构建产物
 dist/
 
-# Logs
+# 日志
 *.log
 npm-debug.log*
 
-# Environment
+# 环境配置（含密钥，只提交 .env.example）
 .env
 .env.local
-!.env.example
-!ADOFAIOnlineAPI/.env.example
+
+# 运行时数据：SQLite 数据库与上传的谱面包
+data/
+charts/
 
 # IDE
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# OS
+# 操作系统
 .DS_Store
 Thumbs.db
-
-# Uploads
-uploads/
-public/charts
-
-ADOFAIOnlineAPI/bundles/
-ADOFAIOnlineAPI/adofaionlineapi
-ADOFAIOnlineAPI/adofaionlineapi.exe
-
-# Config with secrets (optional, uncomment if needed)
-# src/config/index.ts

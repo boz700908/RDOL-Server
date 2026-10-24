@@ -35,7 +35,7 @@ class AuthService {
 
     // 检查是否绑定QQ。原版依赖 QQ 机器人校验，自建部署没有该机器人，
     // 因此改为可配置；REQUIRE_QQ_BIND=false 时跳过。
-    if (config.dev.requireQqBind && !user.qq) {
+    if (config.auth.requireQqBind && !user.qq) {
       return { success: false, message: '未绑定QQ,请在群内通过机器人命令绑定QQ' };
     }
 
