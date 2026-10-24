@@ -1216,3 +1216,8 @@ body {
   font-size: 12px;
   color: var(--color-text-muted);
 }
+
+/* 用户页补充 */
+.table__actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.table__empty { text-align: center; color: var(--color-text-muted); }
+.page__desc--error { color: var(--color-error); }

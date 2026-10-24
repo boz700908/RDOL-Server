@@ -11,11 +11,13 @@ import { wsAdmin } from './ws-admin.js';
 import { renderCharts } from './charts.js';
 import { renderLevels } from './levels.js';
 import { renderMods } from './mods.js';
+import { renderUsers } from './users.js';
 
 const LOGIN_VIEW = 'login-view';
 const APP_SHELL = 'app-shell';
 const VIEW_OVERVIEW = 'overview-view';
 const VIEW_ROOM_LIST = 'room-list-view';
+const VIEW_USERS = 'users-view';
 const VIEW_ROOM_DETAIL = 'room-detail-view';
 const VIEW_CHARTS = 'charts-view';
 const VIEW_LEVELS = 'levels-view';
@@ -126,6 +128,9 @@ function getRoute() {
   }
   if (parts[0] === 'rooms') {
     return { page: 'rooms' };
+  }
+  if (parts[0] === 'users') {
+    return { page: 'users' };
   }
   if (parts[0] === 'charts') {
     return { page: 'charts' };
@@ -313,6 +318,7 @@ function render() {
   toggleView(VIEW_OVERVIEW, route.page === 'overview');
   toggleView(VIEW_ROOM_LIST, route.page === 'rooms');
   toggleView(VIEW_ROOM_DETAIL, route.page === 'room-detail');
+  toggleView(VIEW_USERS, route.page === 'users');
   toggleView(VIEW_CHARTS, route.page === 'charts');
   toggleView(VIEW_LEVELS, route.page === 'levels');
   toggleView(VIEW_MODS, route.page === 'mods');
@@ -326,6 +332,9 @@ function render() {
   } else if (route.page === 'room-detail' && route.roomId) {
     setActiveNav('rooms');
     showRoomDetail(route.roomId);
+  } else if (route.page === 'users') {
+    setActiveNav('users');
+    ensureUsers();
   } else if (route.page === 'charts') {
     setActiveNav('charts');
     // 每次进页面都重新渲染：文件可能在别处被改动
@@ -344,6 +353,13 @@ function render() {
  * 反复重建 DOM 会把用户填了一半的表单清掉，所以用标记守卫。
  */
 const renderedViews = new Set();
+
+function ensureUsers() {
+  const container = document.getElementById(VIEW_USERS);
+  if (!container || renderedViews.has('users')) return;
+  renderedViews.add('users');
+  renderUsers(container);
+}
 
 function ensureCharts() {
   const container = document.getElementById(VIEW_CHARTS);

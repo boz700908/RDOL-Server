@@ -3,6 +3,7 @@
  */
 
 import { escapeHtml } from './utils.js';
+import { deleteRoom } from './api.js';
 
 function playerAvatarHtml(p) {
   const src = p.avatar && p.avatar.trim() ? escapeHtml(p.avatar) : '';
@@ -51,12 +52,13 @@ export function renderRoomDetail(container, room, players, onBack, onSave, onKic
               <span class="room-detail__online"><span id="room-detail-player-count">${count}</span> 在线</span>
               <span class="room-detail__status-badge" id="room-detail-status">${statusText}</span>
               <span>人数 <span id="room-detail-count-text">${count}</span> / <span id="room-detail-max-text">${max}</span></span>
-              <span>房主 ID: ${room.ownerId}</span>
+              <span>房主: ${room.ownerUsername ? escapeHtml(room.ownerUsername) : '—'}${room.ownerId ? `（ID ${room.ownerId}）` : ''}</span>
             </p>
           </div>
           <div class="room-detail__header-actions">
             <button type="button" class="room-detail__btn room-detail__btn--back" id="room-detail-back">← 返回</button>
             <button type="button" class="room-detail__btn room-detail__btn--modify" id="room-detail-modify">修改</button>
+            <button type="button" class="room-detail__btn room-detail__btn--close" id="room-detail-close"${count > 0 ? ' disabled title="房间内还有玩家，先移出"' : ''}>关闭房间</button>
           </div>
         </div>
 
@@ -102,6 +104,19 @@ export function renderRoomDetail(container, room, players, onBack, onSave, onKic
   container.querySelector('#room-detail-back').addEventListener('click', (e) => {
     e.preventDefault();
     onBack();
+  });
+
+  container.querySelector('#room-detail-close')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (!confirm(`确定关闭房间「${room.name}」？`)) return;
+    btn.disabled = true;
+    try {
+      await deleteRoom(room.id);
+      window.location.hash = '#/rooms';
+    } catch (err) {
+      alert(err.message || '关闭失败');
+      btn.disabled = false;
+    }
   });
 
   const editWrap = container.querySelector('#room-detail-edit-wrap');

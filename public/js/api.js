@@ -56,6 +56,10 @@ export async function getRooms() {
  * @param {{ name: string, maxPlayers?: number, password?: string|null, chartUrl: string, chartName: string }} body
  * @returns {Promise<{ roomId: string, room: object }>}
  */
+export async function deleteRoom(id) {
+  return request(`/api/rooms/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function createRoom(body) {
   return request('/api/rooms', {
     method: 'POST',
@@ -224,4 +228,27 @@ export async function previewMod(release = '') {
 
 export async function deleteMod(release) {
   return request(`/api/mods/${encodeURIComponent(release)}`, { method: 'DELETE' });
+}
+
+// ---------- 账号管理 ----------
+
+export async function getUsers({ page = 1, perPage = 20, q = '' } = {}) {
+  const qs = new URLSearchParams({ page: String(page), perPage: String(perPage) });
+  if (q) qs.set('q', q);
+  return request(`/api/users?${qs.toString()}`);
+}
+
+export async function setUserRole(id, role) {
+  return request(`/api/users/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function kickUser(id) {
+  return request(`/api/users/${encodeURIComponent(id)}/kick`, { method: 'POST' });
+}
+
+export async function deleteUser(id) {
+  return request(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

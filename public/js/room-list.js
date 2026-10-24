@@ -3,6 +3,7 @@
  */
 
 import { escapeHtml } from './utils.js';
+import { getUsers } from './api.js';
 
 /**
  * 渲染房间列表
@@ -35,6 +36,7 @@ export function renderRoomList(container, rooms, onSelectRoom, onCreateRoom) {
     createWrap.innerHTML = `
       <h3 class="room-list__create-title">新建房间</h3>
       <form class="room-list__create-form" id="room-list-create-form">
+        <label>房主账号 <select name="ownerId" id="room-list-create-owner" required><option value="">加载中…</option></select></label>
         <label>房间名称 <input type="text" name="name" required placeholder="必填" /></label>
         <label>最大人数 (1–120) <input type="number" name="maxPlayers" min="1" max="120" value="8" /></label>
         <label>密码（选填，留空无密码） <input type="text" name="password" placeholder="选填" /></label>
@@ -47,6 +49,27 @@ export function renderRoomList(container, rooms, onSelectRoom, onCreateRoom) {
         </div>
       </form>
     `;
+    const ownerSelect = createWrap.querySelector('#room-list-create-owner');
+    const ownerHint = document.createElement('p');
+    ownerHint.className = 'room-list__create-message';
+    ownerSelect.insertAdjacentElement('afterend', ownerHint);
+    getUsers({ page: 1, perPage: 100 })
+      .then((data) => {
+        const list = (data && data.list) || [];
+        if (list.length === 0) {
+          ownerSelect.innerHTML = '<option value="">库里还没有账号</option>';
+          ownerSelect.disabled = true;
+          return;
+        }
+        ownerSelect.innerHTML = '<option value="">请选择房主</option>' + list
+          .map((u) => `<option value="${u.id}">${escapeHtml(u.username)}${u.online ? '（在线）' : ''}</option>`)
+          .join('');
+      })
+      .catch((err) => {
+        ownerSelect.innerHTML = '<option value="">加载失败</option>';
+        ownerHint.textContent = err.message || '账号列表加载失败';
+      });
+
     const createBtn = toolbar.querySelector('#room-list-create');
     const form = createWrap.querySelector('#room-list-create-form');
     const messageEl = createWrap.querySelector('#room-list-create-message');
@@ -60,6 +83,12 @@ export function renderRoomList(container, rooms, onSelectRoom, onCreateRoom) {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
+      const ownerId = Number(fd.get('ownerId'));
+      if (!ownerId) {
+        messageEl.textContent = '请先选择房主账号';
+        messageEl.className = 'room-list__create-message room-list__create-message--error';
+        return;
+      }
       const name = fd.get('name')?.toString().trim() ?? '';
       const maxPlayers = Math.min(120, Math.max(1, parseInt(fd.get('maxPlayers'), 10) || 8));
       const password = fd.get('password')?.toString().trim() ?? '';
@@ -68,7 +97,7 @@ export function renderRoomList(container, rooms, onSelectRoom, onCreateRoom) {
       messageEl.textContent = '';
       messageEl.className = 'room-list__create-message';
       try {
-        const res = await onCreateRoom({ name, maxPlayers, password: password || null, chartUrl, chartName });
+        const res = await onCreateRoom({ ownerId, name, maxPlayers, password: password || null, chartUrl, chartName });
         messageEl.textContent = '创建成功，正在跳转…';
         messageEl.className = 'room-list__create-message room-list__create-message--success';
         window.location.hash = `#/rooms/${res.roomId}`;
@@ -93,7 +122,7 @@ export function renderRoomList(container, rooms, onSelectRoom, onCreateRoom) {
           <th>房间名</th>
           <th>人数</th>
           <th>状态</th>
-          <th>房主 ID</th>
+          <th>房主</th>
           <th>谱面</th>
         </tr>
       </thead>
@@ -105,7 +134,7 @@ export function renderRoomList(container, rooms, onSelectRoom, onCreateRoom) {
             <td><a href="#/rooms/${escapeHtml(r.id)}" class="room-table__link" data-room-id="${escapeHtml(r.id)}">${escapeHtml(r.name)}</a></td>
             <td>${r.playerCount} / ${r.maxPlayers}</td>
             <td><span class="room-table__status room-table__status--${r.status}">${r.status === 'waiting' ? '等待中' : '游戏中'}</span></td>
-            <td>${r.ownerId}</td>
+            <td>${r.ownerUsername ? escapeHtml(r.ownerUsername) : '—'}${r.ownerId ? ` <span class="tag tag--muted">ID ${r.ownerId}</span>` : ''}</td>
             <td>${escapeHtml(r.chartName)}</td>
           </tr>
         `

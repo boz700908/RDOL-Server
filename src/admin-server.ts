@@ -299,14 +299,28 @@ async function handleGetOverview(res: http.ServerResponse): Promise<void> {
   });
 }
 
-/** 管理员创建房间时使用的房主 ID（系统房间） */
-const ADMIN_CREATE_ROOM_OWNER_ID = 0;
+/** 批量把用户 ID 换成账号名，找不到的 ID 不会出现在 Map 里 */
+async function usernamesById(ids: number[]): Promise<Map<number, string>> {
+  const uniq = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
+  if (uniq.length === 0) return new Map();
+  const rows = await query<any[]>(
+    `SELECT id, username FROM users WHERE id IN (${uniq.map(() => '?').join(',')})`,
+    uniq
+  );
+  return new Map(rows.map((r) => [Number(r.id), r.username]));
+}
 
 /**
  * GET /api/rooms
  */
-function handleGetRooms(res: http.ServerResponse): void {
-  sendJson(res, 200, roomManager.getList());
+async function handleGetRooms(res: http.ServerResponse): Promise<void> {
+  const rooms = roomManager.getList();
+  // 管理员建房间时指定了真实房主，列表里显示名字比显示裸 ID 有用
+  const names = await usernamesById(rooms.map((r) => r.ownerId));
+  sendJson(res, 200, rooms.map((r) => ({
+    ...r,
+    ownerUsername: names.get(r.ownerId) ?? null,
+  })));
 }
 
 /**
@@ -314,12 +328,28 @@ function handleGetRooms(res: http.ServerResponse): void {
  */
 async function handleCreateRoom(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const body = await parseBody(req) as {
+    ownerId?: number;
     name?: string;
     maxPlayers?: number;
     password?: string | null;
     chartUrl?: string;
     chartName?: string;
   };
+
+  // 房主必须是库里真实存在的账号：以前写死 0，建出来的房间没有房主，
+  // 谁进来都不是房主，也没法转移，等于死房间。
+  const ownerId = Number(body.ownerId);
+  if (!Number.isInteger(ownerId) || ownerId <= 0) {
+    sendJson(res, 400, { success: false, message: '请选择房主账号' });
+    return;
+  }
+  const ownerRows = await query<any[]>('SELECT id, username FROM users WHERE id = ?', [ownerId]);
+  if (ownerRows.length === 0) {
+    sendJson(res, 404, { success: false, message: '房主账号不存在' });
+    return;
+  }
+  const ownerUsername = ownerRows[0].username;
+
   const name = body.name?.toString().trim();
   const chartUrl = body.chartUrl?.toString().trim();
   const chartName = body.chartName?.toString().trim();
@@ -331,7 +361,7 @@ async function handleCreateRoom(req: http.IncomingMessage, res: http.ServerRespo
   const password = body.password?.toString().trim() || undefined;
 
   const result = roomManager.create(
-    ADMIN_CREATE_ROOM_OWNER_ID,
+    ownerId,
     name,
     maxPlayers,
     chartUrl,
@@ -355,6 +385,7 @@ async function handleCreateRoom(req: http.IncomingMessage, res: http.ServerRespo
         chartUrl: room.chartUrl,
         chartName: room.chartName,
         ownerId: room.ownerId,
+        ownerUsername,
         status: room.status,
         playerCount: 0,
       },
@@ -375,6 +406,7 @@ async function handleCreateRoom(req: http.IncomingMessage, res: http.ServerRespo
       chartUrl: room.chartUrl,
       chartName: room.chartName,
       ownerId: room.ownerId,
+      ownerUsername,
       status: room.status,
       playerCount: 0,
     },
@@ -384,15 +416,17 @@ async function handleCreateRoom(req: http.IncomingMessage, res: http.ServerRespo
 /**
  * GET /api/rooms/:id
  */
-function handleGetRoom(res: http.ServerResponse, roomId: string): void {
+async function handleGetRoom(res: http.ServerResponse, roomId: string): Promise<void> {
   const room = roomManager.getRoom(roomId);
   if (!room) {
     sendJson(res, 404, { error: '房间不存在', message: '房间不存在' });
     return;
   }
   const players = sceneManager.getPlayers(roomId);
+  const names = await usernamesById([room.ownerId]);
   const roomWithCount = {
     ...room,
+    ownerUsername: names.get(room.ownerId) ?? null,
     playerCount: players.length,
   };
   sendJson(res, 200, {
@@ -405,6 +439,35 @@ function handleGetRoom(res: http.ServerResponse, roomId: string): void {
       nameColor: p.nameColor,
     })),
   });
+}
+
+/**
+ * DELETE /api/rooms/:id — 关闭空房间。
+ *
+ * 房间里有玩家时拒绝：这时候直接销毁会把玩家留在已经不存在场景里，
+ * 让管理员先把人移出，最后一个人移出时既有逻辑会自动关房间。
+ */
+async function handleDeleteRoom(res: http.ServerResponse, roomId: string): Promise<void> {
+  const room = roomManager.getRoom(roomId);
+  if (!room) {
+    sendJson(res, 404, { success: false, message: '房间不存在' });
+    return;
+  }
+
+  const players = sceneManager.getPlayers(roomId);
+  if (players.length > 0) {
+    sendJson(res, 409, {
+      success: false,
+      message: `房间内还有 ${players.length} 名玩家，请先移出再关闭`,
+    });
+    return;
+  }
+
+  roomManager.destroy(roomId);
+  const destroyedMsg = { type: 'room/destroyed', data: { roomId } };
+  sceneManager.broadcastToLobby(destroyedMsg);
+  adminWsManager.broadcastToAllAdmins(destroyedMsg);
+  sendJson(res, 200, { success: true, message: '房间已关闭' });
 }
 
 /**
@@ -646,6 +709,157 @@ async function levelChartNames(): Promise<Map<string, string[]>> {
     }
   }
   return map;
+}
+
+// ---------------- 账号管理 ----------------
+
+/** 玩家当前所在房间；不在任何房间返回 null */
+function roomOfUser(userId: number): { id: string; name: string } | null {
+  for (const room of roomManager.getList()) {
+    const players = sceneManager.getPlayers(room.id);
+    if (players.some((p) => p.userId === userId)) {
+      return { id: room.id, name: room.name };
+    }
+  }
+  return null;
+}
+
+/** GET /api/users — 账号列表，含在线状态与所在房间 */
+async function handleGetUsers(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  params: URLSearchParams
+): Promise<void> {
+  const page = Math.max(1, Number(params.get('page')) || 1);
+  const perPage = Math.min(100, Math.max(1, Number(params.get('perPage')) || 20));
+  const q = (params.get('q') || '').trim();
+
+  // 模糊匹配账号与邮箱；q 为空就是全量
+  const where = q ? 'WHERE username LIKE ? OR email LIKE ?' : '';
+  const args: any[] = q ? [`%${q}%`, `%${q}%`] : [];
+
+  const countRowsRes = await query<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM users ${where}`,
+    args
+  );
+  const total = Number(countRowsRes[0]?.n ?? 0);
+
+  const rows = await query<any[]>(
+    `SELECT id, username, email, role, status, created_at FROM users ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    [...args, perPage, (page - 1) * perPage]
+  );
+
+  const list = rows.map((r) => ({
+    id: r.id,
+    username: r.username,
+    email: r.email || '',
+    role: r.role,
+    status: r.status,
+    createdAt: r.created_at,
+    online: sessionManager.isOnline(r.id),
+    room: roomOfUser(r.id)
+  }));
+
+  sendJson(res, 200, { list, total, page, perPage });
+}
+
+/**
+ * PATCH /api/users/:id — 改角色（1 普通用户 / 2 管理员）。
+ *
+ * 不允许把最后一个管理员降级：否则管理端就再也进不去账号通道了。
+ */
+async function handleSetUserRole(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  rawId: string
+): Promise<void> {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) {
+    sendJson(res, 400, { success: false, message: '账号 ID 非法' });
+    return;
+  }
+
+  const body = await parseBody(req) as { role?: number };
+  const role = Number(body.role);
+  if (role !== 1 && role !== 2) {
+    sendJson(res, 400, { success: false, message: '角色只能是 1（普通用户）或 2（管理员）' });
+    return;
+  }
+
+  const rows = await query<any[]>('SELECT id, username, role FROM users WHERE id = ?', [id]);
+  if (rows.length === 0) {
+    sendJson(res, 404, { success: false, message: '账号不存在' });
+    return;
+  }
+
+  if (rows[0].role >= 2 && role < 2) {
+    const admins = await query<{ n: number }[]>('SELECT COUNT(*) AS n FROM users WHERE role >= 2');
+    if (Number(admins[0]?.n ?? 0) <= 1) {
+      sendJson(res, 409, { success: false, message: '这是最后一个管理员，不能降级' });
+      return;
+    }
+  }
+
+  await query('UPDATE users SET role = ? WHERE id = ?', [role, id]);
+  sendJson(res, 200, {
+    success: true,
+    message: role === 2 ? `已将 ${rows[0].username} 设为管理员` : `已取消 ${rows[0].username} 的管理员`,
+    role
+  });
+}
+
+/**
+ * POST /api/users/:id/kick — 强制下线。
+ *
+ * 只负责断连接，清理交给既有的断开流程（房间/大厅移除、会话注销都在那里），
+ * 避免这里再走一遍导致重复广播。
+ */
+async function handleKickUser(res: http.ServerResponse, rawId: string): Promise<void> {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) {
+    sendJson(res, 400, { success: false, message: '账号 ID 非法' });
+    return;
+  }
+
+  const session = sessionManager.getSession(id);
+  if (!session) {
+    sendJson(res, 400, { success: false, message: '该账号当前不在线' });
+    return;
+  }
+
+  try {
+    session.ws.close(1000, '管理员强制下线');
+  } catch {
+    // 连接可能已经处于关闭中，忽略即可
+  }
+  sendJson(res, 200, { success: true, message: '已强制下线' });
+}
+
+/** DELETE /api/users/:id — 删号。在线时必须先踢下线，避免留下悬挂会话 */
+async function handleDeleteUser(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  rawId: string
+): Promise<void> {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) {
+    sendJson(res, 400, { success: false, message: '账号 ID 非法' });
+    return;
+  }
+
+  const rows = await query<any[]>('SELECT id, username FROM users WHERE id = ?', [id]);
+  if (rows.length === 0) {
+    sendJson(res, 404, { success: false, message: '账号不存在' });
+    return;
+  }
+
+  if (sessionManager.isOnline(id)) {
+    sendJson(res, 409, { success: false, message: '该账号在线，请先强制下线再删除' });
+    return;
+  }
+
+  await query('DELETE FROM users WHERE id = ?', [id]);
+  sendJson(res, 200, { success: true, message: `已删除账号 ${rows[0].username}` });
 }
 
 /** GET /api/charts — 谱面库文件列表（含被谁引用） */
@@ -1356,7 +1570,7 @@ async function handleApi(
 
     // ---------- 房间 ----------
     if (pathname === '/api/rooms' && req.method === 'GET') {
-      handleGetRooms(res);
+      await handleGetRooms(res);
       return true;
     }
     if (pathname === '/api/rooms' && req.method === 'POST') {
@@ -1367,11 +1581,15 @@ async function handleApi(
       const roomId = decodeURIComponent(segments[1]);
       if (segments.length === 2) {
         if (req.method === 'GET') {
-          handleGetRoom(res, roomId);
+          await handleGetRoom(res, roomId);
           return true;
         }
         if (req.method === 'PATCH') {
           await handlePatchRoom(req, res, roomId);
+          return true;
+        }
+        if (req.method === 'DELETE') {
+          await handleDeleteRoom(res, roomId);
           return true;
         }
       }
@@ -1384,6 +1602,29 @@ async function handleApi(
           await handleTransferOwner(req, res, roomId);
           return true;
         }
+      }
+    }
+
+    // ---------- 账号管理 ----------
+    if (pathname === '/api/users' && req.method === 'GET') {
+      await handleGetUsers(req, res, params);
+      return true;
+    }
+    if (segments[0] === 'users' && segments[1]) {
+      const userId = decodeURIComponent(segments[1]);
+      if (segments.length === 2) {
+        if (req.method === 'PATCH') {
+          await handleSetUserRole(req, res, userId);
+          return true;
+        }
+        if (req.method === 'DELETE') {
+          await handleDeleteUser(req, res, userId);
+          return true;
+        }
+      }
+      if (segments.length === 3 && segments[2] === 'kick' && req.method === 'POST') {
+        await handleKickUser(res, userId);
+        return true;
       }
     }
 
