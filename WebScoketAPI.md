@@ -5,7 +5,7 @@
 ## 连接信息
 
 - 协议：WebSocket
-- 地址：`ws(s)://<your-host>:4005`（默认端口 4005，见 `SERVER_PORT`）
+- 地址：`ws(s)://<your-host>:3005`（默认端口 3005，见 `SERVER_PORT`）
 
 ---
 
@@ -1297,7 +1297,7 @@ public class NetworkManager : MonoBehaviour
 
     void Start()
     {
-        ws = new WebSocket("ws(s)://<your-host>:4005");
+        ws = new WebSocket("ws(s)://<your-host>:3005");
         
         ws.OnOpen += (sender, e) => {
             Debug.Log("连接成功");
@@ -1366,7 +1366,7 @@ public class NetworkManager : MonoBehaviour
 ## 版本与配置
 
 - 文档版本：2.1（与 Node 模块实现对齐）
-- 默认端口：4005（`src/config/constants.ts` 中的 `SERVER_PORT`）
+- 默认端口：3005（`src/config/constants.ts` 中的 `SERVER_PORT`）；HTTP API 在 3004（`src/api-server.ts` 的 `API_PORT`，可用环境变量 `API_PORT` 覆盖）
 - 心跳超时：约 20 秒未收到 ping 会断开（`heartbeatTimeout`）
 - 房间上限：16 个（`MAX_ROOMS`），每房间最多 8 人（`MAX_PLAYERS_PER_ROOM`）
 - 聊天长度：500 字符（`MAX_CHAT_MESSAGE_LENGTH`）
