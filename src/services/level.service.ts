@@ -394,3 +394,113 @@ export async function countLevels(): Promise<number> {
 }
 
 export const UPSTREAM = UPSTREAM_BASE;
+
+/**
+ * 只查上游（不含本地已发布条目），供管理端「社区库」页分开呈现。
+ *
+ * 游戏客户端走 searchLevels（本地+上游合并）；管理端需要能确认「这条到底
+ * 是上游来的还是我们自己发的」，所以给一个只返回上游的口子，并把原始字段
+ * （ruzip 直链、sha1、上传时间等）一并带出来，方便判断要不要收录到本机。
+ */
+export async function searchUpstreamOnly(input: {
+  q?: string;
+  page?: number;
+  perPage?: number;
+  selfBase: string;
+}) {
+  const q = (input.q || '').trim();
+  const page = Math.max(1, Math.trunc(toNumber(input.page, 1)));
+  const perPage = Math.min(UPSTREAM_PAGE_SIZE, Math.max(1, Math.trunc(toNumber(input.perPage, UPSTREAM_PAGE_SIZE))));
+
+  const upstream = await fetchUpstream(q, page, perPage);
+  return {
+    found: upstream.total,
+    page,
+    perPage,
+    hits: upstream.hits.map((hit) => {
+      const doc = upstreamToDocument(hit, input.selfBase);
+      return {
+        ...doc,
+        // 上游原始字段：管理端展示用，客户端契约里没有这些
+        rdzipUrl: String(hit.rdzip_url || ''),
+        imageUrl: String(hit.image_url || ''),
+        thumbUrl: String(hit.thumb_url || ''),
+        sha1: String(hit.sha1 || ''),
+        lastUpdated: String(hit.last_updated || ''),
+        singlePlayer: Boolean(hit.single_player),
+        twoPlayer: Boolean(hit.two_player),
+        seizureWarning: Boolean(hit.seizure_warning)
+      };
+    })
+  };
+}
+
+/**
+ * 把上游某个关卡包抓回本机谱面目录，返回落盘后的文件名。
+ *
+ * 为什么要抓回来而不是让客户端直连 CDN：客户端 url2 走 c2.rhythm.cafe，
+ * 在部分网络下不通；管理端先把包收进本机，游戏端就只依赖本服务器。
+ * 下载走上游 /levels/<id>/download/ 的 302 到 CDN，Node fetch 自动跟随。
+ */
+export async function fetchUpstreamPackage(
+  id: string,
+  chartDir: string,
+  maxBytes: number
+): Promise<{ name: string; size: number }> {
+  const url = upstreamDownloadUrl(id);
+  if (!url) throw new Error('关卡 ID 非法');
+
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'RDOL-Server/2.0 (+self-hosted)', Accept: '*/*' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(180000)
+  });
+  if (!response.ok) throw new Error(`上游返回 ${response.status}`);
+  if (!response.body) throw new Error('上游没有返回内容');
+
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > 0 && declared > maxBytes) {
+    throw new Error(`上游包 ${Math.round(declared / 1048576)}MB 超过上限 ${Math.round(maxBytes / 1048576)}MB`);
+  }
+
+  // 边收边写，避免把整包读进内存（2 核 2G 的机器上大包会直接把进程打死）
+  const fs = await import('fs');
+  const path = await import('path');
+  const crypto = await import('crypto');
+
+  const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+  const name = `${stamp}_${crypto.randomBytes(3).toString('hex')}_${id}.rdzip`;
+  const target = path.join(chartDir, name);
+
+  const handle = fs.createWriteStream(target);
+  let size = 0;
+  try {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      size += chunk.length;
+      if (size > maxBytes) throw new Error('上游包超过大小上限');
+      if (!handle.write(chunk)) {
+        await new Promise<void>((resolve) => handle.once('drain', () => resolve()));
+      }
+    }
+  } catch (err) {
+    handle.destroy();
+    try {
+      fs.rmSync(target, { force: true });
+    } catch {
+      /* 清理失败不掩盖原始错误 */
+    }
+    throw err;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    handle.end(() => resolve());
+    handle.on('error', reject);
+  });
+
+  return { name, size };
+}
+

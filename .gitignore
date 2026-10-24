@@ -25,3 +25,6 @@ charts/
 # 操作系统
 .DS_Store
 Thumbs.db
+
+# mod 发布产物（运行时生成，不入库）
+mod-releases/

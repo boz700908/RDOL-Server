@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ADOFAI Online 服务器管理</title>
+  <title>RDOL 服务器管理</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -12,21 +12,43 @@
 <body>
   <div id="login-view" class="login-view">
     <div class="login-box">
-      <h1 class="login-box__title">服务器管理</h1>
-      <p class="login-box__subtitle">请使用管理员账号登录</p>
+      <h1 class="login-box__title">RDOL 服务器管理</h1>
+      <p class="login-box__subtitle">管理员登录后可管理房间、谱面与 mod 发布</p>
       <form class="login-form" id="login-form">
-        <label class="login-form__label" for="login-account">
-          账号（用户名或邮箱）
-        </label>
-        <input type="text" name="account" id="login-account" class="login-form__input" autocomplete="username" />
-        <label class="login-form__label" for="login-password">
-          密码
-        </label>
-        <input type="password" name="password" id="login-password" class="login-form__input" autocomplete="current-password" />
-        <label class="login-form__remember">
-          <input type="checkbox" name="remember" id="login-remember" aria-describedby="login-remember-desc" />
-          <span id="login-remember-desc">记住我（下次自动填写账号密码）</span>
-        </label>
+        <div class="login-form__modes" role="radiogroup" aria-label="登录方式">
+          <label class="login-form__mode">
+            <input type="radio" name="login-mode" value="account" id="login-mode-account" checked>
+            <span>管理员账号</span>
+          </label>
+          <label class="login-form__mode">
+            <input type="radio" name="login-mode" value="token" id="login-mode-token">
+            <span>服务端令牌</span>
+          </label>
+        </div>
+
+        <div id="login-account-fields">
+          <label class="login-form__label" for="login-account">
+            账号（用户名或邮箱）
+          </label>
+          <input type="text" name="account" id="login-account" class="login-form__input" autocomplete="username" />
+          <label class="login-form__label" for="login-password">
+            密码
+          </label>
+          <input type="password" name="password" id="login-password" class="login-form__input" autocomplete="current-password" />
+          <label class="login-form__remember">
+            <input type="checkbox" name="remember" id="login-remember" aria-describedby="login-remember-desc" />
+            <span id="login-remember-desc">记住我（下次自动填写账号密码）</span>
+          </label>
+        </div>
+
+        <div id="login-token-fields" hidden>
+          <label class="login-form__label" for="login-token">
+            服务端令牌（服务器 .env 里的 API_TOKEN）
+          </label>
+          <input type="password" name="token" id="login-token" class="login-form__input" autocomplete="off" />
+          <p class="login-form__hint">令牌不保存在浏览器里，关闭标签页后需要重新输入。</p>
+        </div>
+
         <p class="login-form__message" id="login-message" aria-live="polite"></p>
         <button type="submit" class="login-form__submit" id="login-submit">登录</button>
       </form>
@@ -36,11 +58,14 @@
   <div id="app-shell" class="app-shell app-shell--hidden">
     <aside class="sidebar" aria-label="主导航">
       <div class="sidebar__brand">
-        <span class="sidebar__title">服务器管理</span>
+        <span class="sidebar__title">RDOL 管理</span>
       </div>
       <nav class="sidebar__nav">
         <a href="#/" class="sidebar__link sidebar__link--active" data-route="overview">概览</a>
         <a href="#/rooms" class="sidebar__link" data-route="rooms">房间列表</a>
+        <a href="#/charts" class="sidebar__link" data-route="charts">谱面库</a>
+        <a href="#/levels" class="sidebar__link" data-route="levels">社区谱面</a>
+        <a href="#/mods" class="sidebar__link" data-route="mods">Mod 发布</a>
       </nav>
       <div class="sidebar__footer">
         <span class="sidebar__status" id="footer-status" aria-live="polite">未连接</span>
@@ -52,6 +77,9 @@
         <section id="overview-view" class="view" aria-hidden="false"></section>
         <section id="room-list-view" class="view view--hidden" aria-hidden="true"></section>
         <section id="room-detail-view" class="view view--hidden" aria-hidden="true"></section>
+        <section id="charts-view" class="view view--hidden" aria-hidden="true"></section>
+        <section id="levels-view" class="view view--hidden" aria-hidden="true"></section>
+        <section id="mods-view" class="view view--hidden" aria-hidden="true"></section>
       </main>
     </div>
   </div>

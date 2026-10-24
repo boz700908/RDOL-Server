@@ -1,6 +1,7 @@
-# ADOFAIOnline 游戏服务端 WebSocket API 文档（Node 模块）
+# RDOL 服务端 WebSocket API 文档
 
-本文档描述 **Node 模块**提供的 WebSocket 接口，端口与常量以 `src/config/constants.ts` 为准。
+本文档描述 RDOL 服务端（`src/index.ts`，端口 3005）对游戏客户端提供的 WebSocket 接口。
+HTTP 侧接口、管理端与 Mod 托管见 [README.md](./README.md)。
 
 ## 连接信息
 
@@ -96,36 +97,40 @@
 
 用于注册或重置密码前获取邮箱验证码。
 
+**自建部署已关闭邮箱验证。** 该动作仅为兼容旧客户端而保留，服务端不读取参数、不发信，
+固定返回成功：
+
+```json
+{ "success": true, "message": "本服务器已关闭邮箱验证，无需验证码" }
+```
+
+客户端可以完全跳过这一步直接注册。
+
+---
+
+### 注册
+
+注册走 WebSocket，动作名 `auth/register`。不需要验证码，`email` 也可以不传。
+
 **请求：**
 ```json
 {
-  "type": "auth/sendCode",
+  "type": "auth/register",
   "data": {
+    "username": "player1",
     "email": "user@example.com",
-    "type": 1
+    "password": "******"
   }
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| email | string | 是 | 邮箱地址 |
-| type | number | 否 | 1=注册（默认），2=重置密码 |
+| username | string | 是 | 账号，唯一 |
+| password | string | 是 | 密码 |
+| email | string | 否 | 传了就校验格式并登记（唯一），便于之后按邮箱登录 |
 
-**响应：**
-```json
-{
-  "type": "auth/sendCode",
-  "success": true,
-  "message": "验证码已发送"
-}
-```
-
----
-
-### 注册
-
-**本 WebSocket 服务不提供注册接口。** 注册请使用 HTTP API（见 `ADOFAIOnlineAPI/API.md` 的 `POST /auth/register`、`POST /auth/send-code` 等）。
+注册成功即返回与登录相同的结构（含 token 与用户信息），客户端无需再登录一次。
 
 ---
 

@@ -2,18 +2,24 @@
  * 管理端入口：登录后一条 WebSocket 接收全 Node 实时数据，无轮询
  */
 
-import { getToken, setToken, clearToken, login, getRemember, setRemember, clearRemember } from './auth.js';
+import { getToken, setToken, clearToken, login, loginWithToken, getRemember, setRemember, clearRemember } from './auth.js';
 import { getOverview, getRooms, getRoom, updateRoom, kickPlayer, transferOwner, createRoom } from './api.js';
 import { toggleView, setActiveNav } from './utils.js';
 import { renderRoomList, bindRoomListRefresh } from './room-list.js';
 import { renderRoomDetail, appendRoomLiveEvent } from './room-detail.js';
 import { wsAdmin } from './ws-admin.js';
+import { renderCharts } from './charts.js';
+import { renderLevels } from './levels.js';
+import { renderMods } from './mods.js';
 
 const LOGIN_VIEW = 'login-view';
 const APP_SHELL = 'app-shell';
 const VIEW_OVERVIEW = 'overview-view';
 const VIEW_ROOM_LIST = 'room-list-view';
 const VIEW_ROOM_DETAIL = 'room-detail-view';
+const VIEW_CHARTS = 'charts-view';
+const VIEW_LEVELS = 'levels-view';
+const VIEW_MODS = 'mods-view';
 
 /** 当前房间列表（由 WS admin/roomList 与 room/created|destroyed|updated 维护） */
 let currentRooms = [];
@@ -37,8 +43,31 @@ function initLoginForm() {
   const accountEl = document.getElementById('login-account');
   const passwordEl = document.getElementById('login-password');
   const rememberEl = document.getElementById('login-remember');
+  const tokenEl = document.getElementById('login-token');
   const messageEl = document.getElementById('login-message');
   const submitEl = document.getElementById('login-submit');
+  const accountFields = document.getElementById('login-account-fields');
+  const tokenFields = document.getElementById('login-token-fields');
+  const modeEls = document.querySelectorAll('input[name="login-mode"]');
+
+  /** 当前选的登录方式：account 走账号密码，token 走服务端 API_TOKEN */
+  const currentMode = () => {
+    const checked = document.querySelector('input[name="login-mode"]:checked');
+    return checked ? checked.value : 'account';
+  };
+
+  const syncMode = () => {
+    const tokenMode = currentMode() === 'token';
+    if (accountFields) accountFields.hidden = tokenMode;
+    if (tokenFields) tokenFields.hidden = !tokenMode;
+    // 切换方式时清掉上一条错误提示，避免误导
+    if (messageEl) {
+      messageEl.textContent = '';
+      messageEl.className = 'login-form__message';
+    }
+  };
+  modeEls.forEach((el) => el.addEventListener('change', syncMode));
+  syncMode();
 
   const saved = getRemember();
   if (saved) {
@@ -51,8 +80,10 @@ function initLoginForm() {
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const tokenMode = currentMode() === 'token';
     const account = accountEl?.value?.trim() ?? '';
     const password = passwordEl?.value ?? '';
+    const rawToken = tokenEl?.value ?? '';
     const remember = rememberEl?.checked ?? false;
 
     if (!messageEl) return;
@@ -61,11 +92,15 @@ function initLoginForm() {
     if (submitEl) submitEl.disabled = true;
 
     try {
-      const result = await login(account, password);
+      const result = tokenMode ? await loginWithToken(rawToken) : await login(account, password);
       if (result.success && result.data?.token) {
         setToken(result.data.token);
-        if (remember) setRemember(account, password);
-        else clearRemember();
+        // 令牌模式不写「记住我」：那是给账号密码自动填充用的
+        if (!tokenMode) {
+          if (remember) setRemember(account, password);
+          else clearRemember();
+        }
+        if (tokenEl) tokenEl.value = '';
         showApp();
         wsAdmin.connect(result.data.token);
         wsAdmin.setOnAdminMessage(handleAdminMessage);
@@ -91,6 +126,15 @@ function getRoute() {
   }
   if (parts[0] === 'rooms') {
     return { page: 'rooms' };
+  }
+  if (parts[0] === 'charts') {
+    return { page: 'charts' };
+  }
+  if (parts[0] === 'levels') {
+    return { page: 'levels' };
+  }
+  if (parts[0] === 'mods') {
+    return { page: 'mods' };
   }
   return { page: 'overview' };
 }
@@ -269,10 +313,57 @@ function render() {
   toggleView(VIEW_OVERVIEW, route.page === 'overview');
   toggleView(VIEW_ROOM_LIST, route.page === 'rooms');
   toggleView(VIEW_ROOM_DETAIL, route.page === 'room-detail');
+  toggleView(VIEW_CHARTS, route.page === 'charts');
+  toggleView(VIEW_LEVELS, route.page === 'levels');
+  toggleView(VIEW_MODS, route.page === 'mods');
 
-  if (route.page === 'overview') showOverview();
-  else if (route.page === 'rooms') showRoomList();
-  else if (route.page === 'room-detail' && route.roomId) showRoomDetail(route.roomId);
+  if (route.page === 'overview') {
+    setActiveNav('overview');
+    showOverview();
+  } else if (route.page === 'rooms') {
+    setActiveNav('rooms');
+    showRoomList();
+  } else if (route.page === 'room-detail' && route.roomId) {
+    setActiveNav('rooms');
+    showRoomDetail(route.roomId);
+  } else if (route.page === 'charts') {
+    setActiveNav('charts');
+    // 每次进页面都重新渲染：文件可能在别处被改动
+    ensureCharts();
+  } else if (route.page === 'levels') {
+    setActiveNav('levels');
+    ensureLevels();
+  } else if (route.page === 'mods') {
+    setActiveNav('mods');
+    ensureMods();
+  }
+}
+
+/**
+ * 三个新页面都自己管数据加载，这里只在第一次进入时渲染一次。
+ * 反复重建 DOM 会把用户填了一半的表单清掉，所以用标记守卫。
+ */
+const renderedViews = new Set();
+
+function ensureCharts() {
+  const container = document.getElementById(VIEW_CHARTS);
+  if (!container || renderedViews.has('charts')) return;
+  renderedViews.add('charts');
+  renderCharts(container);
+}
+
+function ensureLevels() {
+  const container = document.getElementById(VIEW_LEVELS);
+  if (!container || renderedViews.has('levels')) return;
+  renderedViews.add('levels');
+  renderLevels(container);
+}
+
+function ensureMods() {
+  const container = document.getElementById(VIEW_MODS);
+  if (!container || renderedViews.has('mods')) return;
+  renderedViews.add('mods');
+  renderMods(container);
 }
 
 window.addEventListener('hashchange', () => {

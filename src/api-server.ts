@@ -4,8 +4,8 @@
  * 客户端原本依赖线上已失效的 rdonlineapi.rhythmdoctor.top，并且谱面走
  * 123 云盘（open-api.123pan.com）四步上传。这里把两者都收回到本机：
  *
- *   GET  /checkupdate?platform=win|android|ios   版本检查（LoginUI 读 version 字段）
- *   GET  /pan123/token                          兼容保留，返回本服务的上传凭证
+ *   GET  /checkupdate?platform=win|android|ios   版本检查 + mod 热更新清单
+ *   GET  /mods/<release>/<layer>/<path>          mod 文件真实下载（流式）
  *   POST /charts/upload?name=xxx.zip            真实上传谱面 zip（请求体即字节流）
  *   GET  /charts/<file>                         真实下载谱面（流式，任意客户端可取）
  *   GET  /charts                                已上传谱面清单
@@ -23,17 +23,40 @@
  *   CHART_BASE_URL 生成下载地址的前缀；不设则按请求的 Host 自动拼
  *   API_TOKEN     若设置，上传必须带 X-Api-Token 头
  *   MAX_UPLOAD_MB 单次上传上限，默认 64
+ *   MOD_DIR       mod 发布根目录，默认 ./mod-releases
  */
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';
 import { pino } from 'pino';
 import { initSchema } from './db/schema';
 import { publishLevel, searchLevels, countLevels, upstreamDownloadUrl, UPSTREAM } from './services/level.service';
 // CHART_DIR 由 config/chart.ts 统一导出：上传落盘、下载读取、孤儿清理三处
 // 必须看同一个目录，否则清理会去别的地方找文件。
-import { CHART_DIR } from './config/chart';
+import {
+  CHART_DIR,
+  CHART_BASE_URL,
+  MAX_UPLOAD_BYTES,
+  baseUrlFrom,
+  safeChartName,
+  uniqueChartName
+} from './config/chart';
+// mod 热更新：清单只取发布目录下的 CacheAssets，详见 config/mod-releases.ts 的说明。
+import {
+  MOD_ROOT,
+  readCurrentRelease,
+  writeCurrentRelease,
+  readReleaseMeta,
+  listReleases,
+  buildHotManifest,
+  describeRelease,
+  releaseDir
+} from './config/mod-releases';
+import type { ModFileEntry } from './config/mod-releases';
+// 整包分拣/元数据/失败清理三合一，与管理端共用同一套实现
+import { publishModPackage } from './services/mod-publish.service';
 
 const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } }
@@ -41,12 +64,9 @@ const logger = pino({
 
 const API_PORT = Number(process.env.API_PORT || 3004);
 const API_VERSION = process.env.API_VERSION || '2.0.0';
-const CHART_BASE_URL = (process.env.CHART_BASE_URL || '').replace(/\/$/, '');
 const API_TOKEN = process.env.API_TOKEN || '';
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 64) * 1024 * 1024;
-
-// 上传凭证：客户端 Map123TokenUrlU 拿到的就是它
-const UPLOAD_TOKEN = crypto.randomBytes(16).toString('hex');
+// 整包 mod 比单个谱面大得多（含 AssetBundle），上限单独给
+const MAX_MOD_BYTES = Number(process.env.MAX_MOD_MB || 256) * 1024 * 1024;
 
 // 建表（幂等）。放在服务启动阶段，避免请求进来时表还没建好
 initSchema();
@@ -90,20 +110,35 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   res.end(text);
 }
 
-/** 下载地址前缀：优先用配置，否则按请求 Host 自动推断 */
+/**
+ * 下载地址前缀：优先用 CHART_BASE_URL，否则按请求 Host 推断。
+ * 实际逻辑在 config/chart.ts，管理端也要拼同样的地址，共用一份实现。
+ */
 function baseUrlFor(req: http.IncomingMessage): string {
-  if (CHART_BASE_URL) return CHART_BASE_URL;
-  const host = req.headers.host || `127.0.0.1:${API_PORT}`;
-  return `http://${host}`;
+  return baseUrlFrom(req.headers.host, API_PORT);
 }
 
-/** 只允许安全文件名，挡住目录穿越 */
-function safeName(raw: string): string | null {
-  const name = path.basename(raw).replace(/[^\w.\-\u4e00-\u9fa5]/g, '_');
-  if (!name || name === '.' || name === '..') return null;
-  if (!/\.(rdzip|zip|rdlevel)$/i.test(name)) return null;
-  return name;
+/**
+ * 计算文件哈希，格式必须与客户端 ComputeFileHash 一致：`sha256:<64位小写hex>`。
+ * 客户端是逐字节比对字符串，前缀或大小写错了会导致每次启动都重下全部文件。
+ */
+function sha256Tag(absPath: string): string {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(absPath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(1 << 20);
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n <= 0) break;
+      hash.update(buf.subarray(0, n));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return 'sha256:' + hash.digest('hex');
 }
+
+
 
 function listCharts(req: http.IncomingMessage) {
   const base = baseUrlFor(req);
@@ -127,22 +162,90 @@ const server = http.createServer((req, res) => {
   const pathname = decodeURIComponent(url.pathname);
   const method = (req.method || 'GET').toUpperCase();
 
-  // ---------- 版本检查 ----------
+  // ---------- 版本检查 + mod 热更新清单 ----------
+  // 客户端 ScnCheckUpdate 的行为（见 Assets/CheckUpdate/ScnCheckUpdate.cs）：
+  //   version 与自身 BuiltInVersion 比，server 更大就拒绝进游戏（要求整包更新）；
+  //   相等则按 files[] 的 sha256 比对 CacheAssets，缺失/不一致的下载，清单外的删除。
+  // 因此这里 version 报「客户端该有的版本」，不是我们自己的 API_VERSION，
+  // 否则客户端每次都被判定为旧版而进不去。
   if (pathname === '/checkupdate' || pathname === '/checkupdate/') {
     const platform = url.searchParams.get('platform') || '';
-    logger.info(`[checkupdate] platform=${platform} -> ${API_VERSION}`);
+    const releaseId = readCurrentRelease();
+    const meta = releaseId ? readReleaseMeta(releaseId) : null;
+
+    // 没有任何发布时退回旧行为：只报版本、空清单（客户端不会删任何文件）
+    if (!releaseId || !meta) {
+      logger.info(`[checkupdate] platform=${platform} -> ${API_VERSION}（无 mod 发布）`);
+      return sendJson(res, 200, {
+        version: API_VERSION,
+        announcement: '',
+        platform,
+        url: '',
+        force: false,
+        files: []
+      });
+    }
+
+    let files: ModFileEntry[] = [];
+    try {
+      files = buildHotManifest(releaseId, baseUrlFor(req), (abs) => sha256Tag(abs));
+    } catch (err) {
+      // 清单本身有问题时宁可空清单（客户端不会删文件），也不要下发半截清单
+      logger.error(`[checkupdate] 生成 mod 清单失败: ${(err as Error).message}`);
+      files = [];
+    }
+
+    logger.info(
+      `[checkupdate] platform=${platform} release=${releaseId} ` +
+        `clientVersion=${meta.clientVersion} files=${files.length}`
+    );
     return sendJson(res, 200, {
-      version: API_VERSION,
+      version: meta.clientVersion,
+      announcement: meta.announcement,
       platform,
       url: '',
-      force: false
+      force: meta.force,
+      files
     });
   }
 
-  // ---------- 上传凭证 ----------
-  if (pathname === '/pan123/token') {
-    logger.info('[token] 下发上传凭证');
-    return sendJson(res, 200, { token: UPLOAD_TOKEN, expiresIn: 86400 });
+  // ---------- mod 文件下载 ----------
+  // 路径形如 /mods/<release>/CacheAssets/<file>，只读发布目录，且限定两层：
+  // 第一段是发布目录名，第二段是层（CacheAssets / boot）。
+  // 用 basename 白名单之外的所有段都必须逐段编码校验，挡住目录穿越。
+  const modMatch = pathname.match(/^\/mods\/([^/]+)\/(CacheAssets|boot)(\/.*)$/);
+  if (modMatch) {
+    if (method !== 'GET' && method !== 'HEAD') {
+      return sendJson(res, 405, { success: false, message: '请用 GET' });
+    }
+    const releaseId = decodeURIComponent(modMatch[1]);
+    const layer = modMatch[2];
+    const relPath = modMatch[3];
+
+    let target: string;
+    try {
+      const base = path.join(releaseDir(releaseId), layer);
+      target = path.resolve(base, '.' + relPath);
+      // resolve 之后必须仍在 base 目录内，防止 ../ 穿越
+      if (!target.startsWith(path.resolve(base) + path.sep)) {
+        return sendJson(res, 400, { success: false, message: '路径非法' });
+      }
+    } catch {
+      return sendJson(res, 400, { success: false, message: '发布目录名非法' });
+    }
+
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+      return sendJson(res, 404, { success: false, message: '文件不存在' });
+    }
+
+    const stat = fs.statSync(target);
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Access-Control-Allow-Origin': '*'
+    });
+    if (method === 'HEAD') return res.end();
+    return fs.createReadStream(target).pipe(res);
   }
 
   // ---------- 真实上传 ----------
@@ -155,14 +258,13 @@ const server = http.createServer((req, res) => {
     }
 
     const rawName = url.searchParams.get('name') || '';
-    const name = safeName(rawName);
+    const name = safeChartName(rawName);
     if (!name) {
       return sendJson(res, 400, { success: false, message: '文件名非法，只允许 .rdzip / .zip / .rdlevel' });
     }
 
     // 同名覆盖会让旧 URL 指向新内容，加时间戳前缀保证 URL 唯一
-    const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
-    const finalName = `${stamp}_${crypto.randomBytes(3).toString('hex')}_${name}`;
+    const finalName = uniqueChartName(name);
     const target = path.join(CHART_DIR, finalName);
 
     const chunks: Buffer[] = [];
@@ -255,7 +357,8 @@ const server = http.createServer((req, res) => {
 
   // ---------- 真实下载 ----------
   if (pathname.startsWith('/charts/')) {
-    const name = safeName(pathname.slice('/charts/'.length));
+    // 下载侧同样走共享校验：只认裸文件名，挡住 /charts/../ 之类的穿越
+    const name = safeChartName(decodeURIComponent(pathname.slice('/charts/'.length)));
     if (!name) {
       return sendJson(res, 400, { success: false, message: '文件名非法' });
     }
@@ -310,6 +413,106 @@ const server = http.createServer((req, res) => {
     }
     forwardDownload(upstreamUrl, req, res, levelId);
     return;
+  }
+
+  // ---------- mod 发布管理 ----------
+  // 管理员把本机编译出的整包 zip 直接 PUT 上来，服务端按客户端真实的加载路径
+  // 分拣成两层：能热更新的进 CacheAssets，必须重启的进 boot。
+  // 客户端不会也不该看到这个端点，靠 X-Api-Token 挡住。
+  if (pathname === '/mods/admin/publish') {
+    if (method !== 'POST') {
+      return sendJson(res, 405, { success: false, message: '请用 POST' });
+    }
+    if (!API_TOKEN) {
+      return sendJson(res, 403, { success: false, message: '服务端未配置 API_TOKEN，拒绝发布' });
+    }
+    if (req.headers['x-api-token'] !== API_TOKEN) {
+      return sendJson(res, 401, { success: false, message: '凭证无效' });
+    }
+
+    const releaseId = (url.searchParams.get('release') || '').trim();
+    const clientVersion = (url.searchParams.get('clientVersion') || '').trim();
+    const announcement = url.searchParams.get('announcement') || '';
+    const force = url.searchParams.get('force') === '1';
+    const activate = url.searchParams.get('activate') !== '0';
+
+    if (!/^[0-9A-Za-z._-]+$/.test(releaseId)) {
+      return sendJson(res, 400, { success: false, message: 'release 参数非法' });
+    }
+    if (!/^[0-9A-Za-z._-]+$/.test(clientVersion)) {
+      return sendJson(res, 400, { success: false, message: 'clientVersion 参数非法' });
+    }
+
+    readBody(req, MAX_MOD_BYTES)
+      .then((buf) => {
+        // 分拣失败时服务内部已把整个版本目录和 current 清掉，不留半截版本
+        const result = publishModPackage(buf, {
+          releaseId,
+          clientVersion,
+          announcement,
+          force,
+          activate
+        });
+        logger.info(
+          `[mods] 发布 ${releaseId}（clientVersion=${clientVersion}）` +
+            ` 热更新 ${result.hot.length} 个、重启层 ${result.boot.length} 个` +
+            `${result.activated ? '，已设为 current' : ''}`
+        );
+        sendJson(res, 200, {
+          success: true,
+          release: releaseId,
+          clientVersion,
+          activated: result.activated,
+          hot: result.hot,
+          boot: result.boot,
+          warnings: result.warnings
+        });
+      })
+      .catch((err: Error) => {
+        logger.error(`[mods] 发布失败（已清理 ${releaseId}）: ${err.message}`);
+        sendJson(res, 400, { success: false, message: err.message });
+      });
+    return;
+  }
+
+  // 查看发布列表与当前生效版本
+  if (pathname === '/mods/admin/releases') {
+    if (req.headers['x-api-token'] !== API_TOKEN || !API_TOKEN) {
+      return sendJson(res, 401, { success: false, message: '凭证无效' });
+    }
+    const current = readCurrentRelease();
+    return sendJson(res, 200, {
+      success: true,
+      current: current || null,
+      releases: listReleases().map((id) => {
+        const meta = readReleaseMeta(id);
+        const desc = describeRelease(id);
+        return {
+          id,
+          clientVersion: meta?.clientVersion ?? null,
+          force: meta?.force ?? false,
+          hot: desc.hot.length,
+          boot: desc.boot.length
+        };
+      })
+    });
+  }
+
+  // 切换生效版本（回滚也走这里）
+  if (pathname === '/mods/admin/activate') {
+    if (method !== 'POST') {
+      return sendJson(res, 405, { success: false, message: '请用 POST' });
+    }
+    if (!API_TOKEN || req.headers['x-api-token'] !== API_TOKEN) {
+      return sendJson(res, 401, { success: false, message: '凭证无效' });
+    }
+    const releaseId = (url.searchParams.get('release') || '').trim();
+    if (!/^[0-9A-Za-z._-]+$/.test(releaseId) || !readReleaseMeta(releaseId)) {
+      return sendJson(res, 404, { success: false, message: '发布不存在' });
+    }
+    writeCurrentRelease(releaseId);
+    logger.info(`[mods] 切换生效版本 -> ${releaseId}`);
+    return sendJson(res, 200, { success: true, current: releaseId });
   }
 
   // ---------- 自检 ----------
@@ -372,6 +575,7 @@ function forwardDownload(
     });
 }
 
+
 /** 自检响应体：谱面文件数与社区库条目数 */
 function healthBody(req: http.IncomingMessage, levelCount: number) {
   return {
@@ -383,9 +587,15 @@ function healthBody(req: http.IncomingMessage, levelCount: number) {
       levelCount,
       communityUpstream: UPSTREAM,
       maxUploadBytes: MAX_UPLOAD_BYTES,
+      modRoot: MOD_ROOT,
+      modRelease: readCurrentRelease() || null,
+      modReleases: listReleases(),
       endpoints: [
         'GET /checkupdate?platform=',
-        'GET /pan123/token',
+        'GET /mods/<release>/CacheAssets/<file>',
+        'POST /mods/admin/publish?release=&clientVersion=',
+        'GET /mods/admin/releases',
+        'POST /mods/admin/activate?release=',
         'POST /charts/upload?name=x.zip',
         'GET /charts',
         'GET /charts/<file>',
