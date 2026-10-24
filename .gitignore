@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+!.env.example
+!ADOFAIOnlineAPI/.env.example
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads
+uploads/
+public/charts
+
+ADOFAIOnlineAPI/bundles/
+ADOFAIOnlineAPI/adofaionlineapi
+ADOFAIOnlineAPI/adofaionlineapi.exe
+
+# Config with secrets (optional, uncomment if needed)
+# src/config/index.ts
